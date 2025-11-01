@@ -1,18 +1,10 @@
-# Образ Python 3.11
 FROM python:3.11-slim
 
-# Робоча директорія
 WORKDIR /app
+COPY . /app
 
-# Копіюємо файли
-COPY requirements.txt .
-COPY main.py .
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
+RUN playwright install
 
-# Встановлюємо залежності
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Порт для Render
-ENV PORT=10000
-
-# Команда старту
 CMD ["python", "main.py"]
