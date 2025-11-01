@@ -10,4 +10,4 @@ RUN pip install --upgrade pip && \
 
 COPY . .
 
-CMD ["python", "bot.py"]
+CMD ["python", "main.py"]
