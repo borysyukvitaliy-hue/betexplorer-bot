@@ -5,17 +5,17 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from playwright.async_api import async_playwright
 
-# =============================
+# -----------------------------
 # Telegram
-# =============================
+# -----------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# =============================
-# Файли для збереження стану
-# =============================
+# -----------------------------
+# Файли
+# -----------------------------
 KNOWN_MATCHES_FILE = "known_matches.json"
 CONFIG_FILE = "config.json"
 
@@ -25,9 +25,9 @@ DEFAULT_FILTERS = {
     "dropping_bookies": ">30%"
 }
 
-# -------------------------------------
-# Завантаження та збереження фільтрів
-# -------------------------------------
+# -----------------------------
+# Фільтри
+# -----------------------------
 def load_filters():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r") as f:
@@ -40,9 +40,9 @@ def save_filters(filters):
 
 filters = load_filters()
 
-# -------------------------------------
+# -----------------------------
 # Telegram команди
-# -------------------------------------
+# -----------------------------
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer("🤖 Бот запущено та готовий до роботи!")
@@ -52,84 +52,56 @@ async def start(message: types.Message):
 async def status(message: types.Message):
     await message.answer("✅ Бот працює! Перевірка подій кожні 10 хвилин.")
 
-@dp.message(Command("filters"))
-async def show_filters(message: types.Message):
-    kb = [
-        [
-            types.InlineKeyboardButton(text="1h", callback_data="drop_1hour"),
-            types.InlineKeyboardButton(text="2h", callback_data="drop_2hours"),
-            types.InlineKeyboardButton(text="12h", callback_data="drop_12hours"),
-            types.InlineKeyboardButton(text="24h ✅", callback_data="drop_24hours"),
-            types.InlineKeyboardButton(text="48h", callback_data="drop_48hours")
-        ],
-        [
-            types.InlineKeyboardButton(text="today", callback_data="match_today"),
-            types.InlineKeyboardButton(text="today & tomorrow", callback_data="match_today_tomorrow"),
-            types.InlineKeyboardButton(text="7 days", callback_data="match_7days"),
-            types.InlineKeyboardButton(text="anytime", callback_data="match_anytime")
-        ],
-        [
-            types.InlineKeyboardButton(text=">30%", callback_data="book_30"),
-            types.InlineKeyboardButton(text=">40%", callback_data="book_40"),
-            types.InlineKeyboardButton(text=">50%", callback_data="book_50"),
-            types.InlineKeyboardButton(text=">60%", callback_data="book_60"),
-            types.InlineKeyboardButton(text=">70%", callback_data="book_70")
-        ]
-    ]
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=kb)
-
-    text = (
-        f"⚙️ Поточні фільтри:\n"
-        f"• Drop in last: {filters['drop_in_last']}\n"
-        f"• Matches for: {filters['matches_for']}\n"
-        f"• Dropping bookies: {filters['dropping_bookies']}"
-    )
-    await message.answer(text, reply_markup=keyboard)
-
-@dp.callback_query()
-async def change_filter(callback: types.CallbackQuery):
-    data = callback.data
-
-    if data.startswith("drop_"):
-        filters["drop_in_last"] = data.replace("drop_", "")
-    elif data.startswith("match_"):
-        val = data.replace("match_", "")
-        mapping = {
-            "today": "today",
-            "today_tomorrow": "today & tomorrow",
-            "7days": "next 7 days",
-            "anytime": "anytime"
-        }
-        filters["matches_for"] = mapping.get(val, "today")
-    elif data.startswith("book_"):
-        filters["dropping_bookies"] = f">{data.replace('book_', '')}%"
-
-    save_filters(filters)
-    await callback.answer("✅ Фільтри оновлено!")
-    await callback.message.edit_text(
-        f"🔄 Нові фільтри:\n"
-        f"• Drop in last: {filters['drop_in_last']}\n"
-        f"• Matches for: {filters['matches_for']}\n"
-        f"• Dropping bookies: {filters['dropping_bookies']}"
-    )
-    print("[INFO] Фільтри змінено:", filters)
-
-# -------------------------------------
-# /reset - очищення відомих матчів
-# -------------------------------------
 @dp.message(Command("reset"))
 async def reset_data(message: types.Message):
     if os.path.exists(KNOWN_MATCHES_FILE):
         os.remove(KNOWN_MATCHES_FILE)
-        await message.answer("🧹 Всі збережені матчі очищено! Бот почне з чистого списку.")
-        print("[INFO] known_matches.json очищено вручну через /reset")
+        await message.answer("🧹 Всі збережені матчі очищено!")
+        print("[INFO] known_matches.json очищено через /reset")
     else:
-        await message.answer("ℹ️ Файл known_matches.json ще не створено, нічого очищати.")
-        print("[INFO] /reset викликано, але файл не існує.")
+        await message.answer("ℹ️ Файл known_matches.json ще не створено.")
 
-# -------------------------------------
-# Завантаження/збереження відомих матчів
-# -------------------------------------
+# -----------------------------
+# Playwright: скрейпінг з headless=False та логами
+# -----------------------------
+async def fetch_events():
+    events = []
+    async with async_playwright() as p:
+        # Запускаємо браузер у видимому режимі для дебагу
+        browser = await p.chromium.launch(headless=False)
+        page = await browser.new_page()
+        print("[INFO] Відкрив сторінку BetExplorer...")
+       
+        await page.goto("https://www.betexplorer.com/odds-movements/tennis/", timeout=60000)
+        print("[INFO] Сторінка завантажена, очікую таблицю подій...")
+       
+        try:
+            await page.wait_for_selector("tr:has(td.table-main__drop)", timeout=15000)
+            print("[INFO] Таблиця подій знайдена!")
+        except Exception:
+            print("[ERROR] Не вдалося знайти таблицю подій")
+            await browser.close()
+            return []
+
+        rows = await page.query_selector_all("tr:has(td.table-main__drop)")
+        for r in rows:
+            try:
+                match_el = await r.query_selector("td.table-main__tt a")
+                drop_el = await r.query_selector("td.table-main__drop")
+                match = (await match_el.inner_text()).strip()
+                drop = (await drop_el.inner_text()).strip()
+                events.append({"match": match, "drop": drop})
+            except Exception as e:
+                print("[WARN] Пропущено рядок:", e)
+                continue
+
+        await browser.close()
+    print(f"[INFO] Знайдено подій: {len(events)}")
+    return events
+
+# -----------------------------
+# Збереження та перевірка подій
+# -----------------------------
 def load_known_matches():
     if os.path.exists(KNOWN_MATCHES_FILE):
         with open(KNOWN_MATCHES_FILE, "r") as f:
@@ -140,49 +112,9 @@ def save_known_matches(data):
     with open(KNOWN_MATCHES_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-# -------------------------------------
-# Функція отримання подій через Playwright + XPath
-# -------------------------------------
-async def fetch_events():
-    url = "https://www.betexplorer.com/odds-movements/tennis/"
-    print("[INFO] Запускаю браузер Playwright та отримую дані з сайту...")
-    events = []
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        await page.goto(url, timeout=30000)  # 30 сек таймаут
-
-        try:
-            await page.wait_for_selector("//tr[td[contains(text(), '%')]]", timeout=15000)
-        except:
-            print("[WARN] Не знайдено подій на сторінці")
-            await browser.close()
-            return events
-
-        rows = await page.query_selector_all("//tr[td[contains(text(), '%')]]")
-        for r in rows:
-            try:
-                match_el = await r.query_selector(".//td[1]//a")
-                drop_el = await r.query_selector(".//td[contains(text(), '%')]")
-                match_name = await match_el.inner_text()
-                drop = await drop_el.inner_text()
-                events.append({"match": match_name.strip(), "drop": drop.strip()})
-            except Exception:
-                continue
-
-        await browser.close()
-
-    print(f"[INFO] Знайдено подій: {len(events)}")
-    return events
-
-# -------------------------------------
-# Перевірка нових подій
-# -------------------------------------
 async def check_new_events():
     known = load_known_matches()
     events = await fetch_events()
-
     new_events = [e for e in events if e not in known]
 
     if new_events:
@@ -194,9 +126,9 @@ async def check_new_events():
     else:
         print("[INFO] Нових подій немає")
 
-# -------------------------------------
-# Цикл перевірки подій
-# -------------------------------------
+# -----------------------------
+# Основний цикл
+# -----------------------------
 async def main_loop():
     print("[INFO] Бот запущено та моніторить події кожні 10 хв.")
     await bot.send_message(CHAT_ID, "🤖 Бот запущено! Починаю моніторинг...")
@@ -206,11 +138,11 @@ async def main_loop():
             await check_new_events()
         except Exception as e:
             print("[ERROR]", e)
-        await asyncio.sleep(600)  # 10 хв
+        await asyncio.sleep(600)  # 10 хвилин
 
-# -------------------------------------
-# Запуск бота
-# -------------------------------------
+# -----------------------------
+# Старт
+# -----------------------------
 async def main():
     loop_task = asyncio.create_task(main_loop())
     await dp.start_polling(bot)
