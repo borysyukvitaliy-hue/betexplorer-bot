@@ -1,6 +1,13 @@
+# Telegram bot
 aiogram==3.4.1
-requests
-beautifulsoup4
-playwright
-flask
-python-dotenv
+
+# HTTP requests & web scraping
+aiohttp==3.9.4
+beautifulsoup4==4.12.2
+requests==2.32.5
+
+# Environment variables
+python-dotenv==1.2.1
+
+# Web server для Render ping
+flask==3.1.2
