@@ -1,37 +1,21 @@
 import os
 import json
 import asyncio
-from threading import Thread
-from aiohttp import ClientSession
-from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from flask import Flask
 from playwright.async_api import async_playwright
 
-# -------------------------------
-# ✅ Telegram
-# -------------------------------
+# =============================
+# Telegram
+# =============================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# -------------------------------
-# ✅ Flask для Render ping
-# -------------------------------
-app = Flask(__name__)
-
-@app.route("/")
-def ping():
-    return "Bot is alive!"
-
-def run_flask():
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
-
-# -------------------------------
-# ✅ Файли
-# -------------------------------
+# =============================
+# Файли для збереження стану
+# =============================
 KNOWN_MATCHES_FILE = "known_matches.json"
 CONFIG_FILE = "config.json"
 
@@ -41,6 +25,9 @@ DEFAULT_FILTERS = {
     "dropping_bookies": ">30%"
 }
 
+# -------------------------------------
+# Завантаження та збереження фільтрів
+# -------------------------------------
 def load_filters():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r") as f:
@@ -53,9 +40,9 @@ def save_filters(filters):
 
 filters = load_filters()
 
-# -------------------------------
-# ✅ Telegram команди
-# -------------------------------
+# -------------------------------------
+# Telegram команди
+# -------------------------------------
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer("🤖 Бот запущено та готовий до роботи!")
@@ -90,6 +77,7 @@ async def show_filters(message: types.Message):
         ]
     ]
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=kb)
+
     text = (
         f"⚙️ Поточні фільтри:\n"
         f"• Drop in last: {filters['drop_in_last']}\n"
@@ -101,6 +89,7 @@ async def show_filters(message: types.Message):
 @dp.callback_query()
 async def change_filter(callback: types.CallbackQuery):
     data = callback.data
+
     if data.startswith("drop_"):
         filters["drop_in_last"] = data.replace("drop_", "")
     elif data.startswith("match_"):
@@ -114,6 +103,7 @@ async def change_filter(callback: types.CallbackQuery):
         filters["matches_for"] = mapping.get(val, "today")
     elif data.startswith("book_"):
         filters["dropping_bookies"] = f">{data.replace('book_', '')}%"
+
     save_filters(filters)
     await callback.answer("✅ Фільтри оновлено!")
     await callback.message.edit_text(
@@ -124,44 +114,22 @@ async def change_filter(callback: types.CallbackQuery):
     )
     print("[INFO] Фільтри змінено:", filters)
 
+# -------------------------------------
+# /reset - очищення відомих матчів
+# -------------------------------------
 @dp.message(Command("reset"))
 async def reset_data(message: types.Message):
     if os.path.exists(KNOWN_MATCHES_FILE):
         os.remove(KNOWN_MATCHES_FILE)
-        await message.answer("🧹 Всі збережені матчі очищено!")
-        print("[INFO] known_matches.json очищено через /reset")
+        await message.answer("🧹 Всі збережені матчі очищено! Бот почне з чистого списку.")
+        print("[INFO] known_matches.json очищено вручну через /reset")
     else:
-        await message.answer("ℹ️ Файл known_matches.json ще не створено.")
+        await message.answer("ℹ️ Файл known_matches.json ще не створено, нічого очищати.")
+        print("[INFO] /reset викликано, але файл не існує.")
 
-# -------------------------------
-# ✅ Playwright fetch_events
-# -------------------------------
-async def fetch_events():
-    url = "https://www.betexplorer.com/odds-movements/tennis/"
-    print("[INFO] Отримую дані із сайту через Playwright...")
-
-    events = []
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        await page.goto(url)
-        await page.wait_for_selector("tr:has(td.table-main__drop)")
-
-        rows = await page.query_selector_all("tr:has(td.table-main__drop)")
-        for r in rows:
-            try:
-                match_el = await r.query_selector("td.table-main__tt a")
-                drop_el = await r.query_selector("td.table-main__drop")
-                match = (await match_el.inner_text()).strip()
-                drop = (await drop_el.inner_text()).strip()
-                events.append({"match": match, "drop": drop})
-            except Exception:
-                continue
-
-        await browser.close()
-    print(f"[INFO] Знайдено подій: {len(events)}")
-    return events
-
+# -------------------------------------
+# Завантаження/збереження відомих матчів
+# -------------------------------------
 def load_known_matches():
     if os.path.exists(KNOWN_MATCHES_FILE):
         with open(KNOWN_MATCHES_FILE, "r") as f:
@@ -172,50 +140,81 @@ def save_known_matches(data):
     with open(KNOWN_MATCHES_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
+# -------------------------------------
+# Функція отримання подій через Playwright + XPath
+# -------------------------------------
+async def fetch_events():
+    url = "https://www.betexplorer.com/odds-movements/tennis/"
+    print("[INFO] Запускаю браузер Playwright та отримую дані з сайту...")
+    events = []
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(url, timeout=30000)  # 30 сек таймаут
+
+        try:
+            await page.wait_for_selector("//tr[td[contains(text(), '%')]]", timeout=15000)
+        except:
+            print("[WARN] Не знайдено подій на сторінці")
+            await browser.close()
+            return events
+
+        rows = await page.query_selector_all("//tr[td[contains(text(), '%')]]")
+        for r in rows:
+            try:
+                match_el = await r.query_selector(".//td[1]//a")
+                drop_el = await r.query_selector(".//td[contains(text(), '%')]")
+                match_name = await match_el.inner_text()
+                drop = await drop_el.inner_text()
+                events.append({"match": match_name.strip(), "drop": drop.strip()})
+            except Exception:
+                continue
+
+        await browser.close()
+
+    print(f"[INFO] Знайдено подій: {len(events)}")
+    return events
+
+# -------------------------------------
+# Перевірка нових подій
+# -------------------------------------
 async def check_new_events():
     known = load_known_matches()
     events = await fetch_events()
+
     new_events = [e for e in events if e not in known]
 
     if new_events:
         print(f"[INFO] Нові події: {len(new_events)}")
         for e in new_events:
             msg = f"🎾 {e['match']} | Drop: {e['drop']}"
-            try:
-                await bot.send_message(CHAT_ID, msg)
-            except Exception as ex:
-                print("❌ Cannot send message:", ex)
+            await bot.send_message(CHAT_ID, msg)
         save_known_matches(events)
     else:
         print("[INFO] Нових подій немає")
 
-# -------------------------------
-# ✅ Main loop
-# -------------------------------
+# -------------------------------------
+# Цикл перевірки подій
+# -------------------------------------
 async def main_loop():
-    print("[INFO] Бот моніторить події кожні 10 хв.")
-    try:
-        await bot.send_message(CHAT_ID, "🤖 Бот запущено! Починаю моніторинг...")
-    except Exception as e:
-        print("❌ Cannot send start message:", e)
+    print("[INFO] Бот запущено та моніторить події кожні 10 хв.")
+    await bot.send_message(CHAT_ID, "🤖 Бот запущено! Починаю моніторинг...")
 
     while True:
         try:
             await check_new_events()
         except Exception as e:
             print("[ERROR]", e)
-        await asyncio.sleep(600)
+        await asyncio.sleep(600)  # 10 хв
 
-# -------------------------------
-# ✅ Запуск
-# -------------------------------
+# -------------------------------------
+# Запуск бота
+# -------------------------------------
 async def main():
     loop_task = asyncio.create_task(main_loop())
     await dp.start_polling(bot)
     await loop_task
 
 if __name__ == "__main__":
-    # Flask ping
-    Thread(target=run_flask).start()
-    # Telegram bot
     asyncio.run(main())
